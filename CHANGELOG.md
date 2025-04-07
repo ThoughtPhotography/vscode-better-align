@@ -36,3 +36,7 @@
 # v1.2.0 [#](https://github.com/chouzz/vscode-better-align/releases/tag/v1.2.0)
 
 - Initial release
+
+## [1.4.3] - 2024-07-24
+### Fixed
+- Prevent adding leading spaces on lines without type declarations when aligning assignment operators (Fixes issue where `var a = 1; b = 2;` would become `var a = 1;    b = 2;`).

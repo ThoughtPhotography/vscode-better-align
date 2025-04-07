@@ -518,49 +518,6 @@ export class Formatter {
             }
         }
 
-        // Add white space after the first word
-        if (firstWordLength > 0) {
-            let wordSpace: Token = {
-                type: TokenType.Insertion,
-                text: whitespace(firstWordLength + 1),
-            };
-            let oneSpace: Token = { type: TokenType.Insertion, text: ' ' };
-
-            for (let info of range.infos) {
-                let count = 0;
-                for (let token of info.tokens) {
-                    if (token.type === info.sgfntTokenType) {
-                        count = -count;
-                        break;
-                    }
-                    if (token.type !== TokenType.Whitespace) {
-                        ++count;
-                    }
-                }
-
-                if (count === -1) {
-                    info.tokens.unshift(wordSpace);
-                } else if (count < -1) {
-                    if (info.tokens[1].type === TokenType.Whitespace) {
-                        info.tokens[1] = oneSpace;
-                    } else if (info.tokens[0].type === TokenType.CommaAsWord) {
-                        info.tokens.splice(1, 0, oneSpace);
-                    }
-                    if (info.tokens[0].text.length !== firstWordLength) {
-                        let ws = {
-                            type: TokenType.Insertion,
-                            text: whitespace(firstWordLength - info.tokens[0].text.length),
-                        };
-                        if (info.tokens[0].type === TokenType.CommaAsWord) {
-                            info.tokens.unshift(ws);
-                        } else {
-                            info.tokens.splice(1, 0, ws);
-                        }
-                    }
-                }
-            }
-        }
-
         // 2. Remove whitespace surrounding operator ( comma in the middle of the line is also consider an operator ).
         for (let info of range.infos) {
             let i = 1;
