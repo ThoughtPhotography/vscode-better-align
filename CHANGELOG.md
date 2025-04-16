@@ -1,5 +1,15 @@
 # v1.4.2 [#](https://github.com/chouzz/vscode-better-align/releases/tag/v1.4.2)
 
+## [1.4.4] - YYYY-MM-DD
+### Added
+- New command `Align (Ignoring Gaps)` (`vscode-better-align.alignIgnoringGaps`).
+  - Ignores blank lines and lines containing only comments when determining alignment blocks.
+  - Treats the entire selection as a single alignment block when multiple lines are selected.
+  - Preserves the indentation of the first non-blank/comment line in the block, applying it to all aligned lines.
+
+### Fixed
+- Update description for `betterAlign.surroundSpace` default values.
+
 - Fix assignment like C style
 
 # v1.4.1 [#](https://github.com/chouzz/vscode-better-align/releases/tag/v1.4.1)

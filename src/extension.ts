@@ -13,6 +13,10 @@ export function activate(context: vscode.ExtensionContext) {
             telemetry.reporter.sendTelemetryEvent('align');
             formatter.process(editor);
         }),
+        vscode.commands.registerTextEditorCommand('vscode-better-align.alignIgnoringGaps', (editor) => {
+            telemetry.reporter.sendTelemetryEvent('alignIgnoringGaps');
+            formatter.process(editor, true);
+        }),
         vscode.workspace.onDidChangeTextDocument((e) => {
             if (alignAfterEnter && e.contentChanges.some((changes) => changes.text.includes('\n'))) {
                 vscode.commands.executeCommand('vscode-better-align.align');

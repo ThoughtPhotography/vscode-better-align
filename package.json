@@ -2,7 +2,7 @@
   "name": "vscode-better-align",
   "displayName": "Better Align",
   "description": "Better vertical alignment with/without selection in any language for any characters or words.",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "icon": "images/icon.png",
   "publisher": "chouzz",
   "license": "SEE LICENSE IN LICENSE",
@@ -39,6 +39,10 @@
       {
         "command": "vscode-better-align.align",
         "title": "Align"
+      },
+      {
+        "command": "vscode-better-align.alignIgnoringGaps",
+        "title": "Align (Ignoring Gaps)"
       }
     ],
     "configuration": {
@@ -71,7 +75,7 @@
             ],
             "comment": 2
           },
-          "description": "Specify how many spaces to insert around the operator."
+          "description": "Specify how many spaces to insert around the operator. First value is before, second value is after. Special value -1 means stick operator with its sibling token. For comment, it means minimum spaces between code and trailing comment. Set it to -1 to disable trailing comment alignment."
         },
         "betterAlign.indentBase": {
           "type": "string",

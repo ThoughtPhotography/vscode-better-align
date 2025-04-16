@@ -53,16 +53,16 @@ export class Formatter {
      *   preceding comma
      * Ignore anything inside a quote, comment, or block
      */
-    public process(editor: vscode.TextEditor): void {
+    public process(editor: vscode.TextEditor, ignoreGaps: boolean = false): void {
         this.editor = editor;
 
         // Get line ranges
-        const ranges = this.getLineRanges(editor);
+        const ranges = this.getLineRanges(editor, ignoreGaps);
 
         // Format
         let formatted: string[][] = [];
         for (let range of ranges) {
-            formatted.push(this.format(range));
+            formatted.push(this.format(range, ignoreGaps));
         }
 
         // Apply
@@ -83,7 +83,7 @@ export class Formatter {
 
     protected editor: vscode.TextEditor;
 
-    protected getLineRanges(editor: vscode.TextEditor): LineRange[] {
+    protected getLineRanges(editor: vscode.TextEditor, ignoreGaps: boolean): LineRange[] {
         var ranges: LineRange[] = [];
         editor.selections.forEach((sel) => {
             const indentBase = this.getConfig().get('indentBase', 'firstline') as string;
@@ -92,29 +92,67 @@ export class Formatter {
             let res: LineRange;
             if (sel.isSingleLine) {
                 // If this selection is single line. Look up and down to search for the similar neighbour
-                ranges.push(this.narrow(0, editor.document.lineCount - 1, sel.active.line, importantIndent));
+                res = ignoreGaps
+                    ? this.narrowIgnoringGaps(0, editor.document.lineCount - 1, sel.active.line, importantIndent)
+                    : this.narrow(0, editor.document.lineCount - 1, sel.active.line, importantIndent);
+                if (res.infos.length > 0) { // Ensure narrow returned something
+                    ranges.push(res);
+                }
             } else {
                 // Otherwise, narrow down the range where to align
                 let start = sel.start.line;
                 let end = sel.end.line;
 
-                while (true) {
-                    res = this.narrow(start, end, start, importantIndent);
-                    let lastLine = res.infos[res.infos.length - 1];
-
-                    if (lastLine.line.lineNumber > end) {
-                        break;
+                if (ignoreGaps) {
+                    // Treat entire selection as one block, tokenizing all lines
+                    let infos: LineInfo[] = [];
+                    let commonTokenTypes: TokenType[] | null = null;
+                    for (let i = start; i <= end; i++) {
+                        const tokenInfo = this.tokenize(i);
+                        // TODO: Add check here to skip blank/comment lines if needed for type checking?
+                        // For now, just collect all lines.
+                        infos.push(tokenInfo);
+                        if (tokenInfo.sgfntTokens.length > 0) {
+                            if (commonTokenTypes === null) {
+                                commonTokenTypes = tokenInfo.sgfntTokens;
+                            } else {
+                                commonTokenTypes = this.arrayAnd(commonTokenTypes, tokenInfo.sgfntTokens);
+                            }
+                        }
                     }
-
-                    if (res.infos[0] && res.infos[0].sgfntTokenType !== TokenType.Invalid) {
-                        ranges.push(res);
+                    // Basic filtering: Only proceed if there are lines with common significant tokens
+                    if (infos.length > 0 && commonTokenTypes && commonTokenTypes.length > 0) {
+                        // Assign the most common significant token type (e.g., Assignment > Colon)
+                        let sgt = TokenType.Assignment;
+                        if (commonTokenTypes.indexOf(TokenType.Assignment) === -1) {
+                             sgt = commonTokenTypes[0]; // Or choose based on priority
+                        }
+                        infos.forEach(info => info.sgfntTokenType = sgt);
+                        ranges.push({ anchor: sel.anchor.line, infos });
                     }
+                } else {
+                    // Original behavior: Iterate using narrow
+                    while (true) {
+                        res = this.narrow(start, end, start, importantIndent);
+                        if (!res.infos[0]) {
+                            break; // Avoid infinite loop if narrow returns empty
+                        }
+                        let lastLine = res.infos[res.infos.length - 1];
 
-                    if (lastLine.line.lineNumber === end) {
-                        break;
+                        if (lastLine.line.lineNumber > end) {
+                            break;
+                        }
+
+                        if (res.infos[0] && res.infos[0].sgfntTokenType !== TokenType.Invalid) {
+                            ranges.push(res);
+                        }
+
+                        if (lastLine.line.lineNumber === end) {
+                            break;
+                        }
+
+                        start = lastLine.line.lineNumber + 1;
                     }
-
-                    start = lastLine.line.lineNumber + 1;
                 }
             }
         });
@@ -369,6 +407,9 @@ export class Formatter {
      */
     protected narrow(start: number, end: number, anchor: number, importantIndent: boolean): LineRange {
         let anchorToken = this.tokenize(anchor);
+        if (this.isBlankOrComment(anchorToken)) {
+             return { anchor, infos: [] }; // Don't align single blank/comment lines
+        }
         let range = { anchor, infos: [anchorToken] };
 
         let tokenTypes = anchorToken.sgfntTokens;
@@ -384,6 +425,10 @@ export class Formatter {
         let i = anchor - 1;
         while (i >= start) {
             let token = this.tokenize(i);
+
+            if (this.isBlankOrComment(token)) {
+                break; // Original behavior stops at blank lines
+            }
 
             if (this.hasPartialToken(token)) {
                 break;
@@ -406,6 +451,10 @@ export class Formatter {
         i = anchor + 1;
         while (i <= end) {
             let token = this.tokenize(i);
+
+            if (this.isBlankOrComment(token)) {
+                break; // Original behavior stops at blank lines
+            }
 
             let tt = this.arrayAnd(tokenTypes, token.sgfntTokens);
             if (tt.length === 0) {
@@ -439,95 +488,223 @@ export class Formatter {
         return range;
     }
 
-    protected format(range: LineRange): string[] {
-        // 0. Remove indentatioin, and trailing whitespace
-        let indentation = '';
-        let anchorLine = range.infos[0];
-        const config = this.getConfig();
-
-        if ((config.get('indentBase', 'firstline') as string) === 'activeline') {
-            for (let info of range.infos) {
-                if (info.line.lineNumber === range.anchor) {
-                    anchorLine = info;
-                    break;
-                }
+    protected isBlankOrComment(info: LineInfo): boolean {
+        if (info.line.isEmptyOrWhitespace) {
+            return true;
+        }
+        // Check if tokens contain only whitespace and/or comments
+        for (const token of info.tokens) {
+            if (token.type !== TokenType.Whitespace && token.type !== TokenType.Comment) {
+                return false;
             }
         }
-        if (!anchorLine.tokens.length) {
+        // If we only found whitespace or comments (or nothing), it's effectively blank/comment
+        return true;
+    }
+
+    // New function to narrow range while ignoring gaps (blank/comment lines)
+    protected narrowIgnoringGaps(start: number, end: number, anchor: number, importantIndent: boolean): LineRange {
+        let anchorToken = this.tokenize(anchor);
+        let initialAnchor = anchor; // Store original anchor for potential return if no valid line found
+        // If anchor itself is blank/comment, find the nearest non-blank/comment line to use as anchor
+        let searchDir = -1;
+        while (this.isBlankOrComment(anchorToken)) {
+            anchor += searchDir;
+            if (anchor < start || anchor > end) {
+                return { anchor: initialAnchor, infos: [] }; // No alignable lines found, return empty with original anchor
+            }
+            anchorToken = this.tokenize(anchor);
+            // If we searched down and failed, try searching up
+            if (searchDir === -1 && anchor < start) {
+                searchDir = 1;
+                anchor = anchorToken.line.lineNumber + 1; // Start searching upwards from original anchor + 1
+            }
+        }
+
+        let range = { anchor, infos: [anchorToken] };
+        let tokenTypes = anchorToken.sgfntTokens;
+
+        if (anchorToken.sgfntTokens.length === 0 || this.hasPartialToken(anchorToken)) {
+            return range; // Return just the valid anchor if it has no tokens or is partial
+        }
+
+        // Search upwards, skipping gaps
+        let i = anchor - 1;
+        while (i >= start) {
+            let token = this.tokenize(i);
+
+            if (this.isBlankOrComment(token)) {
+                // Add blank/comment line to preserve it, but don't check its type or indent
+                range.infos.unshift(token);
+                i--;
+                continue;
+            }
+
+            if (this.hasPartialToken(token)) {
+                break; // Stop if we hit a partial token
+            }
+
+            let tt = this.arrayAnd(tokenTypes, token.sgfntTokens);
+            if (tt.length === 0) {
+                break; // Stop if token types don't match
+            }
+            tokenTypes = tt;
+
+            if (importantIndent && !this.hasSameIndent(anchorToken, token)) {
+                break; // Stop if indent doesn't match (when `indentBase` is 'dontchange')
+            }
+
+            range.infos.unshift(token);
+            --i;
+        }
+
+        // Search downwards, skipping gaps
+        i = anchor + 1;
+        while (i <= end) {
+            let token = this.tokenize(i);
+
+            if (this.isBlankOrComment(token)) {
+                // Add blank/comment line to preserve it, but don't check its type or indent
+                range.infos.push(token);
+                i++;
+                continue;
+            }
+
+            let tt = this.arrayAnd(tokenTypes, token.sgfntTokens);
+            if (tt.length === 0) {
+                break; // Stop if token types don't match
+            }
+            tokenTypes = tt;
+
+            if (importantIndent && !this.hasSameIndent(anchorToken, token)) {
+                break; // Stop if indent doesn't match (when `indentBase` is 'dontchange')
+            }
+
+            // Don't include a partial token at the end of the downwards search
+            // because it might belong to the next block
+            if (this.hasPartialToken(token)) {
+                break;
+            }
+
+            range.infos.push(token);
+            ++i;
+        }
+
+        // Assign the determined significant token type to all non-gap lines
+        let sgt;
+        if (tokenTypes.indexOf(TokenType.Assignment) >= 0) {
+            sgt = TokenType.Assignment;
+        } else {
+            sgt = tokenTypes.length > 0 ? tokenTypes[0] : TokenType.Invalid; // Default if somehow no common types found
+        }
+        for (let info of range.infos) {
+            if (!this.isBlankOrComment(info)) {
+                info.sgfntTokenType = sgt;
+            }
+        }
+
+        return range;
+    }
+
+    protected format(range: LineRange, ignoreGaps: boolean = false): string[] {
+        // 0. Handle empty range
+        if (!range.infos.length) {
             return [];
         }
 
-        // Get indentation from multiple lines
-        /*
-            fasdf   !== 1231321;    => indentation = 0
-        var abc   === 123;
-        
-            test := 1               => indentation = 4
-            teastas := 2
+        const config = this.getConfig();
+        const indentBaseSetting = config.get('indentBase', 'firstline') as string;
 
-        */
+        // --- Store Original Lines & Identify Lines to Format ---
+        const originalLines: { [key: number]: LineInfo } = {};
+        range.infos.forEach(info => originalLines[info.line.lineNumber] = info);
+
+        let linesToFormat: LineInfo[] = [];
+        if (ignoreGaps) {
+            linesToFormat = range.infos.filter(info => !this.isBlankOrComment(info));
+        } else {
+            linesToFormat = range.infos; // Keep all lines if not ignoring gaps
+        }
+
+        // If, after filtering, there are no lines left to format, return original lines
+        if (linesToFormat.length === 0) {
+            return range.infos.map(info => info.line.text);
+        }
+
+        // --- Determine Indentation ---
+        let indentation = '';
         let firstNonSpaceCharIndex = 0;
-        let min = Infinity;
-        let whiteSpaceType = ' ';
-        for (let info of range.infos) {
-            firstNonSpaceCharIndex = info.line.text.search(/\S/);
-            min = Math.min(min, firstNonSpaceCharIndex);
-            if (info.tokens[0].type === TokenType.Whitespace) {
-                whiteSpaceType = info.tokens[0].text[0] ?? ' ';
+        let whiteSpaceType = ' '; // Default to space
+        const firstLineToFormat = linesToFormat[0];
+
+        if (firstLineToFormat.tokens.length > 0 && firstLineToFormat.tokens[0].type === TokenType.Whitespace) {
+            whiteSpaceType = firstLineToFormat.tokens[0].text[0] ?? ' ';
+        }
+
+        if (ignoreGaps || indentBaseSetting === 'firstline') {
+            // Use first *alignable* line's indent
+            firstNonSpaceCharIndex = firstLineToFormat.line.text.search(/\S/);
+            if (firstNonSpaceCharIndex === -1) {firstNonSpaceCharIndex = 0; {// Handle lines with only whitespace somehow? Should be caught by isBlankOrComment
+                indentation = whiteSpaceType.repeat(firstNonSpaceCharIndex);
+            }
+        } else if (indentBaseSetting === 'activeline') {
+            // Find anchor line's indent among the alignable lines
+            let anchorLine = linesToFormat.find(info => info.line.lineNumber === range.anchor) ?? firstLineToFormat;
+            firstNonSpaceCharIndex = anchorLine.line.text.search(/\S/);
+            if (firstNonSpaceCharIndex === -1) {firstNonSpaceCharIndex = 0;} {
+                indentation = whiteSpaceType.repeat(firstNonSpaceCharIndex);
+            }
+        } else { // 'dontchange' - applies only if not ignoring gaps, otherwise handled by narrow logic
+            // Indentation will be handled line-by-line based on original
+            // We still need the whitespace type from the first line
+            indentation = ''; // Placeholder, will be set per line later
+        }
+
+        // --- Prepare Lines for Formatting ---
+        // Remove indent and trailing whitespace from lines *to be formatted*
+        linesToFormat.forEach(info => {
+            if (info.tokens[0]?.type === TokenType.Whitespace) {
                 info.tokens.shift();
             }
-            if (info.tokens.length > 1 && info.tokens[info.tokens.length - 1].type === TokenType.Whitespace) {
+            if (info.tokens.length > 0 && info.tokens[info.tokens.length - 1].type === TokenType.Whitespace) {
                 info.tokens.pop();
             }
-        }
-        indentation = whiteSpaceType.repeat(min);
-        /* 1. Special treatment for Word-Word-Operator ( e.g. var abc = )
-        For example, without:
+        });
 
-        var abc === 123;                var abc     === 123;
-        var fsdafsf === 32423,  =>      var fsdafsf === 32423,
-        fasdf !== 1231321;              fasdf       !== 1231321;
-
-        with this :
-
-        var abc === 123;                var abc     === 123;
-        var fsdafsf === 32423,  =>      var fsdafsf === 32423,
-        fasdf !== 1231321;                  fasdf   !== 1231321;
-        */
-
-        // Calculate first word's length
+        // --- Calculate First Word Length (for specific alignment cases) ---
         let firstWordLength = 0;
-        for (let info of range.infos) {
-            let count = 0;
-            for (let token of info.tokens) {
-                if (token.type === info.sgfntTokenType) {
-                    count = -count;
-                    break;
+        // Only calculate if not ignoring gaps (original behavior)
+        if (!ignoreGaps) {
+            for (let info of linesToFormat) {
+                let count = 0;
+                for (let token of info.tokens) {
+                    if (token.type === info.sgfntTokenType) {
+                        count = -count;
+                        break;
+                    }
+                    if (token.type === TokenType.Block) {
+                        continue;
+                    }
+                    if (token.type !== TokenType.Whitespace) {
+                        ++count;
+                    }
                 }
-                // Skip calculate word length before block, See https://github.com/chouzz/vscode-better-align/issues/57
-                if (token.type === TokenType.Block) {
-                    continue;
+                if (count < -1) {
+                    firstWordLength = Math.max(firstWordLength, info.tokens[0]?.text.length ?? 0);
                 }
-                if (token.type !== TokenType.Whitespace) {
-                    ++count;
-                }
-            }
-
-            if (count < -1) {
-                firstWordLength = Math.max(firstWordLength, info.tokens[0].text.length);
             }
         }
 
-        // 2. Remove whitespace surrounding operator ( comma in the middle of the line is also consider an operator ).
-        for (let info of range.infos) {
+        // --- Remove Whitespace Around Operators ---
+        for (let info of linesToFormat) {
             let i = 1;
             while (i < info.tokens.length) {
                 if (info.tokens[i].type === info.sgfntTokenType || info.tokens[i].type === TokenType.Comma) {
-                    if (info.tokens[i - 1].type === TokenType.Whitespace) {
+                    if (info.tokens[i - 1]?.type === TokenType.Whitespace) {
                         info.tokens.splice(i - 1, 1);
                         --i;
                     }
-                    if (info.tokens[i + 1] && info.tokens[i + 1].type === TokenType.Whitespace) {
+                    if (info.tokens[i + 1]?.type === TokenType.Whitespace) {
                         info.tokens.splice(i + 1, 1);
                     }
                 }
@@ -535,10 +712,10 @@ export class Formatter {
             }
         }
 
-        // 3. Align
+        // --- Align Logic ---
         const configOP = config.get('operatorPadding') as string;
         const configWS = config.get('surroundSpace');
-        const stt = TokenType[range.infos[0].sgfntTokenType].toLowerCase();
+        const stt = TokenType[linesToFormat[0].sgfntTokenType]?.toLowerCase() ?? 'assignment'; // Default if invalid
         const configDef: any = {
             colon: [0, 1],
             assignment: [1, 1],
@@ -548,79 +725,81 @@ export class Formatter {
         const configSTT = configWS[stt] || configDef[stt];
         const configComment = configWS['comment'] || configDef['comment'];
 
-        const rangeSize = range.infos.length;
+        const formatSize = linesToFormat.length;
+        let length = new Array<number>(formatSize).fill(0);
+        let column = new Array<number>(formatSize).fill(0);
+        let formattedContent = new Array<string>(formatSize).fill(''); // Store content after indentation
 
-        let length = new Array<number>(rangeSize);
-        length.fill(0);
-        let column = new Array<number>(rangeSize);
-        column.fill(0);
-        let result = new Array<string>(rangeSize);
-        result.fill(indentation);
-
-        let exceed = 0; // Tracks how many line have reached to the end.
+        let exceed = 0;
         let hasTrallingComment = false;
-        let resultSize = 0;
+        let resultSize = 0; // Tracks max length before operator
 
-        while (exceed < rangeSize) {
+        while (exceed < formatSize) {
             let operatorSize = 0;
 
-            // First pass: for each line, scan until we reach to the next operator
-            for (let l = 0; l < rangeSize; ++l) {
+            // First pass: scan to next operator for each line being formatted
+            for (let l = 0; l < formatSize; ++l) {
                 let i = column[l];
-                let info = range.infos[l];
+                let info = linesToFormat[l];
                 let tokenSize = info.tokens.length;
 
                 if (i === -1) {
-                    continue;
+                    continue; // Already finished this line
                 }
 
                 let end = tokenSize;
-                let res = result[l];
+                let lineContent = formattedContent[l];
 
-                // Bail out if we reach to the trailing comment
-                if (tokenSize > 1 && info.tokens[tokenSize - 1].type === TokenType.Comment) {
+                // Check for trailing comment
+                if (tokenSize > 0 && info.tokens[tokenSize - 1].type === TokenType.Comment) {
                     hasTrallingComment = true;
-                    if (tokenSize > 2 && info.tokens[tokenSize - 2].type === TokenType.Whitespace) {
+                    end = tokenSize - 1;
+                    if (tokenSize > 1 && info.tokens[tokenSize - 2].type === TokenType.Whitespace) {
                         end = tokenSize - 2;
-                    } else {
-                        end = tokenSize - 1;
                     }
                 }
 
                 for (; i < end; ++i) {
                     let token = info.tokens[i];
-                    // Vertical align will occur at significant operator or subsequent comma
                     if (token.type === info.sgfntTokenType || (token.type === TokenType.Comma && i !== 0)) {
                         operatorSize = Math.max(operatorSize, token.text.length);
                         break;
                     } else {
-                        res += token.text;
+                        lineContent += token.text;
                     }
                 }
 
-                result[l] = res;
+                formattedContent[l] = lineContent;
                 if (i < end) {
-                    resultSize = Math.max(resultSize, res.length);
+                    // Only update resultSize if we stopped at an operator within the main content
+                    resultSize = Math.max(resultSize, lineContent.length);
                 }
 
                 if (i === end) {
+                    // Reached end (or trailing comment start)
                     ++exceed;
                     column[l] = -1;
-                    info.tokens.splice(0, end);
+                    // Store remaining tokens (like the trailing comment) for later
+                    info.tokens = info.tokens.slice(end);
                 } else {
+                    // Stopped at an operator
                     column[l] = i;
                 }
             }
 
-            // Second pass: align
-            for (let l = 0; l < rangeSize; ++l) {
+            // Second pass: align operators
+            if (exceed >= formatSize) {
+                break; // Exit if all lines finished in first pass
+            }
+
+            for (let l = 0; l < formatSize; ++l) {
                 let i = column[l];
                 if (i === -1) {
                     continue;
                 }
 
-                let info = range.infos[l];
-                let res = result[l];
+                let info = linesToFormat[l];
+                let lineContent = formattedContent[l];
 
                 let op = info.tokens[i].text;
                 if (op.length < operatorSize) {
@@ -632,75 +811,107 @@ export class Formatter {
                 }
 
                 let padding = '';
-                if (resultSize > res.length) {
-                    padding = whitespace(resultSize - res.length);
+                if (resultSize > lineContent.length) {
+                    padding = whitespace(resultSize - lineContent.length);
                 }
 
                 if (info.tokens[i].type === TokenType.Comma) {
-                    res += op;
+                    lineContent += op;
                     if (i < info.tokens.length - 1) {
-                        res += padding + ' '; // Ensure there's one space after comma.
+                        lineContent += padding + ' '; // Ensure one space after comma
                     }
-                    // Skip if there is only comment type without any operators.
-                } else if (info.tokens.length === 1 && info.tokens[0].type === TokenType.Comment) {
-                    exceed++;
-                    break;
                 } else {
+                    // Apply surround space settings
                     if (configSTT[0] < 0) {
-                        // operator will stick with the leftside word
+                        // Stick left
                         if (configSTT[1] < 0) {
-                            // operator will be aligned, and the sibling token will be connected with the operator
-                            let z = res.length - 1;
+                            // Stick both - complex alignment (original logic)
+                            let z = lineContent.length - 1;
                             while (z >= 0) {
-                                let ch = res.charAt(z);
+                                let ch = lineContent.charAt(z);
                                 if (ch.match(REG_WS)) {
                                     break;
                                 }
                                 --z;
                             }
-                            res = res.substring(0, z + 1) + padding + res.substring(z + 1) + op;
+                            lineContent = lineContent.substring(0, z + 1) + padding + lineContent.substring(z + 1) + op;
                         } else {
-                            res = res + op;
+                            lineContent = lineContent + op; // Stick left only
                             if (i < info.tokens.length - 1) {
-                                res += padding;
+                                 lineContent += padding; // Add padding before next token
                             }
                         }
                     } else {
-                        res = res + padding + whitespace(configSTT[0]) + op;
+                        // Space before operator
+                        lineContent = lineContent + padding + whitespace(configSTT[0]) + op;
                     }
                     if (configSTT[1] > 0) {
-                        res += whitespace(configSTT[1]);
+                        // Space after operator
+                        lineContent += whitespace(configSTT[1]);
                     }
                 }
 
-                result[l] = res;
-                column[l] = i + 1;
+                formattedContent[l] = lineContent;
+                column[l] = i + 1; // Move past the operator for the next iteration
+                // We processed an operator, so this line isn't finished yet.
+                // Find the index of this line in the exceed calculation and potentially remove it
+                // This logic might be complex, simpler to just recalculate exceed based on column[l] === -1
             }
+            // Recalculate exceed count after processing operators
+            exceed = column.filter(c => c === -1).length;
         }
 
-        // 4. Align trailing comment
-        if (configComment < 0) {
-            // It means user don't want to align trailing comment.
-            for (let l = 0; l < rangeSize; ++l) {
-                let info = range.infos[l];
-                for (let token of info.tokens) {
-                    result[l] += token.text;
+        // --- Align Trailing Comments ---
+        if (hasTrallingComment && configComment >= 0) {
+            resultSize = 0;
+            for (let l = 0; l < formatSize; ++l) {
+                resultSize = Math.max(resultSize, formattedContent[l].length);
+            }
+            for (let l = 0; l < formatSize; ++l) {
+                let info = linesToFormat[l];
+                if (info.tokens.length > 0 && info.tokens[0].type === TokenType.Comment) {
+                    let lineContent = formattedContent[l];
+                    formattedContent[l] = lineContent + whitespace(resultSize - lineContent.length + configComment) + info.tokens.join('');
                 }
             }
         } else {
-            resultSize = 0;
-            for (let res of result) {
-                resultSize = Math.max(res.length, resultSize);
-            }
-            for (let l = 0; l < rangeSize; ++l) {
-                let info = range.infos[l];
-                if (info.tokens.length) {
-                    let res = result[l];
-                    result[l] = res + whitespace(resultSize - res.length + configComment) + info.tokens.pop()?.text;
+            // Append remaining tokens (comments) without alignment if configComment < 0 or no comments found
+            for (let l = 0; l < formatSize; ++l) {
+                let info = linesToFormat[l];
+                if (info.tokens.length > 0) {
+                    formattedContent[l] += info.tokens.join('');
                 }
             }
         }
 
-        return result;
+        // --- Reconstruct Final Output ---
+        const finalResult: string[] = [];
+        const formattedLinesMap = new Map<number, string>();
+        linesToFormat.forEach((info, index) => {
+            // Apply final indentation
+             let finalIndentation = indentation; // Use calculated base indentation
+            if (!ignoreGaps && indentBaseSetting === 'dontchange') {
+                // For 'dontchange' without ignoring gaps, use original indent
+                const originalInfo = originalLines[info.line.lineNumber];
+                finalIndentation = originalInfo.line.text.substring(0, originalInfo.line.text.search(/\S|$/));
+            }
+            // Ensure finalIndentation is a string
+            if (typeof finalIndentation !== 'string') {
+                finalIndentation = ''; // Default to empty string if undefined/null
+            }
+            formattedLinesMap.set(info.line.lineNumber, finalIndentation + formattedContent[index]);
+        });
+
+        // Iterate through the original lines in order
+        range.infos.forEach(originalInfo => {
+            if (formattedLinesMap.has(originalInfo.line.lineNumber)) {
+                finalResult.push(formattedLinesMap.get(originalInfo.line.lineNumber)!);
+            } else {
+                // This was a blank/comment line, push its original text
+                finalResult.push(originalInfo.line.text);
+            }
+        });
+
+        return finalResult;
     }
 }
