@@ -915,3 +915,4 @@ export class Formatter {
         return finalResult;
     }
 }
+}
