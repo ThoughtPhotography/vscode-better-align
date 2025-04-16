@@ -644,16 +644,18 @@ export class Formatter {
         if (ignoreGaps || indentBaseSetting === 'firstline') {
             // Use first *alignable* line's indent
             firstNonSpaceCharIndex = firstLineToFormat.line.text.search(/\S/);
-            if (firstNonSpaceCharIndex === -1) {firstNonSpaceCharIndex = 0; {// Handle lines with only whitespace somehow? Should be caught by isBlankOrComment
-                indentation = whiteSpaceType.repeat(firstNonSpaceCharIndex);
+            if (firstNonSpaceCharIndex === -1) {
+                firstNonSpaceCharIndex = 0; // Handle lines with only whitespace
             }
+            indentation = whiteSpaceType.repeat(firstNonSpaceCharIndex);
         } else if (indentBaseSetting === 'activeline') {
             // Find anchor line's indent among the alignable lines
             let anchorLine = linesToFormat.find(info => info.line.lineNumber === range.anchor) ?? firstLineToFormat;
             firstNonSpaceCharIndex = anchorLine.line.text.search(/\S/);
-            if (firstNonSpaceCharIndex === -1) {firstNonSpaceCharIndex = 0;} {
-                indentation = whiteSpaceType.repeat(firstNonSpaceCharIndex);
+            if (firstNonSpaceCharIndex === -1) {
+                firstNonSpaceCharIndex = 0;
             }
+            indentation = whiteSpaceType.repeat(firstNonSpaceCharIndex);
         } else { // 'dontchange' - applies only if not ignoring gaps, otherwise handled by narrow logic
             // Indentation will be handled line-by-line based on original
             // We still need the whitespace type from the first line
@@ -914,5 +916,4 @@ export class Formatter {
 
         return finalResult;
     }
-}
 }
