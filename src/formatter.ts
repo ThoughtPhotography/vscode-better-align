@@ -256,7 +256,36 @@ export class Formatter {
             } else if (char === ':' && next === ':') {
                 currTokenType = TokenType.Word;
                 nextSeek = 2;
+            } else if ((char === '<' || char === '>' || char === '!') && next === '=') { // <=, >=, !=
+                currTokenType = TokenType.Assignment; // Treat comparisons like assignments for alignment
+                nextSeek = 2;
             } else if (char === ':' && next !== ':' || (char === '?' && next === ':')) {
+                currTokenType = TokenType.Colon;
+            } else if (char === '/' && next === '/') {
+                currTokenType = TokenType.Comment;
+                pos = text.length; // Skip to end for line comment
+            } else if (char === '/' && next === '*') {
+                 currTokenType = TokenType.Comment; // Start of block comment
+            } else if (char === '*' && next === '/') {
+                 currTokenType = TokenType.Word; // End of block comment marker treated as word? Check logic.
+                 nextSeek = 2; // Skip */
+            } else if (char === '+' || char === '-' || char === '*' || char === '/' || char === '%' || char === '&' || char === '|' || char === '^' || char === '<' || char === '>' || char === '!' || char === '?') {
+                // Potential compound operator (+=, -=, *=, /=, %=, &=, |=, ^=, <=, >=, !=, ==, &&, ||, ??, ?. maybe others)
+                if (next === '=') { // Assignment operators (+=, -=, *=, /=, %=, &=, |=, ^=, <=, >=, !=, ==)
+                    // Treat comparison/assignment operators like assignment for alignment purposes?
+                    // Or introduce new token types? For now, let's group them broadly.
+                    currTokenType = TokenType.Assignment; // Could refine later if needed
+                    nextSeek = 2;
+                } else if ((char === '&' && next === '&') || (char === '|' && next === '|') || (char === '?' && next === '?')) { // Logical operators (&&, ||, ??)
+                    currTokenType = TokenType.Word; // Or a new logical operator type? Treat as word for now.
+                    nextSeek = 2;
+                } else if (char === '?' && next === '.') { // Optional chaining (?.)
+                    currTokenType = TokenType.Word; // Treat as word for now.
+                    nextSeek = 2;
+                } else {
+                    currTokenType = TokenType.Word; // Treat single operator characters as Word
+                }
+            } else if (char === ':') {
                 currTokenType = TokenType.Colon;
             } else {
                 currTokenType = TokenType.Word;
@@ -324,21 +353,20 @@ export class Formatter {
                 // or we will lost symbols like "] } )"
             }
 
-            if (char === '/') {
-                // Skip to end if we encounter single line comment
-                if (next === '/') {
-                    pos = text.length;
-                } else if (next === '*') {
-                    ++pos;
-                    while (pos < text.length) {
-                        if (text.charAt(pos) === '*' && text.charAt(pos + 1) === '/') {
-                            ++pos;
-                            currTokenType = TokenType.Word;
-                            break;
-                        }
-                        ++pos;
+            // Skip to end of block comment
+            if (char === '/' && text.charAt(pos + 1) === '*') {
+                 ++pos; // Move past '*'
+                while (pos < text.length -1) { // Check pos+1
+                    if (text.charAt(pos) === '*' && text.charAt(pos + 1) === '/') {
+                        pos++; // Move past '/'
+                        // Reset token type after block comment? Let the loop handle it.
+                        break;
                     }
+                    pos++;
                 }
+                // Adjust pos for the main loop increment
+                pos -= (nextSeek -1); // Counteract the nextSeek at the end if we broke out
+                currTokenType = TokenType.Word; // After comment, it's likely Word
             }
 
             pos += nextSeek;
@@ -864,24 +892,48 @@ export class Formatter {
         }
 
         // --- Align Trailing Comments ---
+        let maxCodeLength = 0;
         if (hasTrallingComment && configComment >= 0) {
-            resultSize = 0;
+            // First pass for comments: find max code length and store comment text
+            const commentInfos = linesToFormat.map(info => {
+                let commentText = '';
+                let codeLength = formattedContent[linesToFormat.indexOf(info)].length;
+                // Find the actual comment token, ignoring potential whitespace before it
+                const commentToken = info.tokens.find(t => t.type === TokenType.Comment);
+                if (commentToken) {
+                     commentText = commentToken.text;
+                }
+                maxCodeLength = Math.max(maxCodeLength, codeLength);
+                return { codeLength, commentText };
+            });
+
+            // Second pass for comments: apply padding and append comment
             for (let l = 0; l < formatSize; ++l) {
-                resultSize = Math.max(resultSize, formattedContent[l].length);
-            }
-            for (let l = 0; l < formatSize; ++l) {
-                let info = linesToFormat[l];
-                if (info.tokens.length > 0 && info.tokens[0].type === TokenType.Comment) {
+                const commentInfo = commentInfos[l];
+                if (commentInfo.commentText) { // Only add comment if one exists
                     let lineContent = formattedContent[l];
-                    formattedContent[l] = lineContent + whitespace(resultSize - lineContent.length + configComment) + info.tokens.join('');
+                    let paddingNeeded = maxCodeLength - lineContent.length + configComment;
+                    formattedContent[l] = lineContent + whitespace(Math.max(0, paddingNeeded)) + commentInfo.commentText;
+                } else {
+                    // If a line in the block doesn't have a comment, just ensure it aligns with the others
+                    // (Optional: could add padding even without comment, but usually not desired)
+                    // formattedContent[l] = formattedContent[l] + whitespace(Math.max(0, maxCodeLength - formattedContent[l].length));
                 }
             }
         } else {
             // Append remaining tokens (comments) without alignment if configComment < 0 or no comments found
+            // Keep original behavior for this case, ensure only comment text is joined if possible
             for (let l = 0; l < formatSize; ++l) {
                 let info = linesToFormat[l];
-                if (info.tokens.length > 0) {
-                    formattedContent[l] += info.tokens.join('');
+                const commentToken = info.tokens.find(t => t.type === TokenType.Comment);
+                if (commentToken) {
+                    // Append only the comment text, potentially ignoring leading whitespace
+                    formattedContent[l] += commentToken.text;
+                } else if (info.tokens.length > 0) {
+                     // If other tokens remain (unlikely now), append them?
+                     // Or safer to just ignore non-comment remaining tokens?
+                     // Let's stick to only appending the identified comment for now.
+                    // formattedContent[l] += info.tokens.join(''); // Original behavior
                 }
             }
         }

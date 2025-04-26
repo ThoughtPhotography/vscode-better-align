@@ -6,3 +6,6 @@ node_modules
 /.specstory
 /.history
 /.cursorindexingignore
+/.vscode
+/.cursorindexingignore.bak
+/.gitignore

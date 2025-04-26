@@ -1,8 +1,8 @@
 {
   "name": "vscode-better-align",
   "displayName": "Better Align",
-  "description": "Better vertical alignment with/without selection in any language for any characters or words.",
-  "version": "1.4.4",
+  "description": "Align your code by colon(:), assignment(=,+=,-=,*=,/=) and comma(,). It has additional support for comma-first coding style.",
+  "version": "1.4.5",
   "icon": "images/icon.png",
   "publisher": "chouzz",
   "license": "SEE LICENSE IN LICENSE",

@@ -50,3 +50,20 @@
 ## [1.4.3] - 2024-07-24
 ### Fixed
 - Prevent adding leading spaces on lines without type declarations when aligning assignment operators (Fixes issue where `var a = 1; b = 2;` would become `var a = 1;    b = 2;`).
+
+## [1.4.5] - 2024-07-29
+### Fixed
+- Prevented insertion of spaces within multi-character operators (e.g., `>=`, `<=`, `!=`).
+- Preserved and aligned trailing comments within alignment blocks.
+
+## [1.4.4] - 2024-03-04
+### Added
+- New command `Align (Ignoring Gaps)` (`vscode-better-align.alignIgnoringGaps`).
+  - Ignores blank lines and lines containing only comments when determining alignment blocks.
+  - Treats the entire selection as a single alignment block when multiple lines are selected.
+  - Preserves the indentation of the first non-blank/comment line in the block, applying it to all aligned lines.
+
+### Fixed
+- Update description for `betterAlign.surroundSpace` default values.
+
+- Fix assignment like C style
